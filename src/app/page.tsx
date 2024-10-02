@@ -1,95 +1,138 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+"use client";
+import { useState, useEffect, useCallback } from "react";
+import { GoogleMap, Marker, Polyline, useJsApiLoader } from "@react-google-maps/api";
+import { GetSafePedestrianRoute } from "./services/routeService";
+import { Point } from "./services/firebaseService";
 
-export default function Home() {
+const containerStyle = {
+  width: "100%",
+  height: "500px",
+};
+
+const libraries: ("geometry" | "places")[] = ["geometry"];
+
+const center = {
+  lat: 35.682839,
+  lng: 139.759455,
+};
+
+function Home() {
+  const { isLoaded, loadError } = useJsApiLoader({
+    googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
+    libraries,
+  });
+
+  const [currentLocation, setCurrentLocation] = useState<google.maps.LatLngLiteral | null>(null);
+  const [endPoint, setEndPoint] = useState<google.maps.LatLngLiteral | null>(null);
+  const [routeData, setRouteData] = useState<{ path: google.maps.LatLngLiteral[]; risks: Point[] }>({ path: [], risks: [] });
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const getGeolocation = () => {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const { latitude, longitude } = position.coords;
+            setCurrentLocation({ lat: latitude, lng: longitude }); // ここで緯度・経度が正しい数値か確認
+          },
+          (error) => {
+            console.error("Error getting current position:", error);
+            setError("位置情報の取得中にエラーが発生しました。");
+          },
+          { enableHighAccuracy: true }
+        );        
+      } else {
+        setError("Geolocationがサポートされていません。");
+      }
+    };
+
+    getGeolocation();
+  }, []);
+
+  const fetchSafeRoute = useCallback(
+    async (endPoint: google.maps.LatLngLiteral) => {
+      if (currentLocation) {
+        try {
+          const start: [number, number] = [currentLocation.lng, currentLocation.lat];
+          const end: [number, number] = [endPoint.lng, endPoint.lat];
+          const [routePolyline, risks] = await GetSafePedestrianRoute(start, end);
+          
+          // pathとrisksをまとめてstateに保存
+          setRouteData({ path: routePolyline,risks: risks });
+        } catch (error) {
+          setError("ルート取得中にエラーが発生しました。");
+        }
+      }
+    },
+    [currentLocation]
+  );
+  
+  const handleMapClick = async (event: google.maps.MapMouseEvent) => {
+    const latLng = event.latLng?.toJSON();
+    if (latLng && currentLocation) {
+      setEndPoint(latLng);
+      await fetchSafeRoute(latLng);
+    }
+  };
+
+  if (loadError) {
+    return <div>Error loading maps</div>;
+  }
+
+  if (!isLoaded) {
+    return <p>Loading map...</p>;
+  }
+
+  if (error) {
+    return <p>{error}</p>;
+  }
+
+
+  console.log(routeData);
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol>
-          <li>
-            Get started by editing <code>src/app/page.tsx</code>.
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
-
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+    <div>
+      {currentLocation ? (
+        <GoogleMap
+          mapContainerStyle={containerStyle}
+          center={currentLocation || center}
+          zoom={13}
+          onClick={handleMapClick}
+        >
+          {routeData.path.length > 0 && <Polyline path={routeData.path} options={{ strokeColor: "#0000FF", strokeWeight: 5 }} />}
+          {currentLocation && (
+            <Marker
+              position={currentLocation}  // { lat: number, lng: number }形式が必須
+              label="Start"
             />
-            Deploy now
-          </a>
-          <a
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-            className={styles.secondary}
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className={styles.footer}>
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          )}
+          {endPoint && (
+            <Marker
+              position={endPoint}  // { lat: number, lng: number }形式が必須
+              label="End"
+            />
+          )}
+
+          {routeData.risks.map((risk, index) => {
+            if (risk.lat === undefined || risk.lng === undefined) return null;
+            
+            const riskPosition: google.maps.LatLngLiteral = { lat: risk.lat, lng: risk.lng };  // ここで変数に代入
+            return (
+              <Marker
+                key={index}
+                position={riskPosition}  // positionにlatLngLiteral形式を渡す
+                label={`Risk ${index + 1}`}
+                icon={{
+                  url: "http://maps.google.com/mapfiles/ms/icons/red-dot.png",
+                }}
+              />
+            );
+          })}
+        </GoogleMap>
+      ) : (
+        <p>Getting your location...</p>
+      )}
     </div>
   );
 }
+
+export default Home;
