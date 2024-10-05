@@ -1,14 +1,16 @@
 import { fetchLocationData, Point } from "./firebaseService";
-import polyline from 'polyline'; // ポリラインライブラリをインポート
+import polyline, { encode } from 'polyline'; // Import polyline library
 import axios from 'axios';
+import {decode} from './polylineService'
 
-// HERE Routing APIのエンドポイント
+
+// HERE Routing API endpoint
 const HERE_API_URL = 'https://router.hereapi.com/v8/routes';
 
-// 環境変数からAPIキーを取得
+// Get API Key from environment variables
 const hereApiKey = process.env.NEXT_PUBLIC_HERE_API_KEY || '';
 
-// インストラクション（ルート案内）の型定義
+// Instruction definition for route guidance
 interface Instruction {
     text: string;
     distance: number;
@@ -16,54 +18,65 @@ interface Instruction {
     interval: [number, number];
 }
 
-// 各ルートの詳細情報の型定義
+// RoutePath definition
 interface RoutePath {
-    distance: number;  // ルートの総距離（メートル）
-    time: number;      // ルートの総時間（ミリ秒）
+    distance: number;  // Total route distance (meters)
+    time: number;      // Total route time (milliseconds)
     geometry: {
-        coordinates: [number, number][]; // 経緯度の配列 (経度, 緯度)
+        coordinates: [number, number][]; // Array of lat/lng coordinates
     };
     instructions: Instruction[];
-    bbox: [number, number, number, number];  // バウンディングボックス
+    bbox: [number, number, number, number];  // Bounding box
 }
 
-// HERE APIのレスポンス全体の型定義
+// Notice definition for sections
+interface Notice {
+    title: string;
+    code: string;
+    severity: string;
+}
+
+// Updated HERE API response type to include notices
 interface HereServiceResponse {
     routes: {
         sections: {
-            polyline: string;  // ポリライン形式のルート
+            polyline: string;  // Route polyline in string format
             summary: {
-                duration: number;  // ルートの総時間（秒）
-                length: number;    // ルートの総距離（メートル）
+                duration: number;  // Total route time (seconds)
+                length: number;    // Total route distance (meters)
             };
-            instructions: Instruction[];  // 各区間の指示
+            instructions: Instruction[];  // Step-by-step instructions
+            notices?: Notice[];  // Optional notices array
         }[];
     }[];
 }
 
-// ルート検索関数（歩行者用）
+// Function to search for pedestrian route avoiding a corridor
 const searchRouteForPedestrians = async (
     startPoint: [number, number],
     endPoint: [number, number],
     pointsToAvoid: Point[]
 ): Promise<HereServiceResponse> => {
     try {
-        // 避けたいポイントをポリゴン形式に変換
-        const avoidAreas = pointsToAvoid.map(point => `${point.lat},${point.lng}`);
+        // Filter out invalid risk points
+        const validRisks = pointsToAvoid.filter(risk => risk.lat !== undefined && risk.lng !== undefined);
 
-        // HERE Routing APIリクエスト
+        // Encode the polyline from risk points (for the corridor)
+        const m = 0.00005;
+        const corridorPolyline = validRisks.map(risk => `bbox:${risk.lat-m},${risk.lng-m},${risk.lat+m},${risk.lng+m}`).join('|');
+
+        // HERE Routing API request
         const response = await axios.get(HERE_API_URL, {
             params: {
                 apiKey: hereApiKey,
-                transportMode: 'pedestrian', // 歩行者用のモードを指定
-
-                origin: `${startPoint[1]},${startPoint[0]}`, // 出発地点
-                destination: `${endPoint[1]},${endPoint[0]}`, // 到着地点
-                avoidAreas: avoidAreas.join('|'),  // 回避エリアをポリゴン形式で指定
-                return: 'polyline'  // ポリライン形式でルートを返す
+                transportMode: 'pedestrian', // Set mode to pedestrian
+                origin: `${startPoint[1]},${startPoint[0]}`, // Origin (lat, lng)
+                destination: `${endPoint[1]},${endPoint[0]}`, // Destination (lat, lng)
+                "avoid[areas]":corridorPolyline,
+                return: 'polyline'  // Return route as polyline
             }
+            
         });
-
         return response.data as HereServiceResponse;
     } catch (error) {
         console.error('Error fetching pedestrian route:', error);
@@ -71,15 +84,23 @@ const searchRouteForPedestrians = async (
     }
 };
 
-// Google Maps API形式のポリラインに変換
+// Convert HERE API polyline to Google Maps API polyline format
 const convertToGooglePolyline = (encodedPolyline: string): { lat: number; lng: number }[] => {
-    const decodedPath = polyline.decode(encodedPolyline);
-    return decodedPath.map(([lat, lng]) => ({ lat, lng }));  // { lat, lng }形式で返す
+    const decodedPath = decode(encodedPolyline).polyline;
+    return decodedPath.map(([lat, lng]) => ({ lat, lng }));  // Convert to { lat, lng } format
 };
 
+const isViolated = (response: HereServiceResponse): boolean => {
+    // 全てのルートのセクションをフラットにして、すべてのnoticesを検索
+    const notice = response.routes
+        .flatMap(route => route.sections)  // すべてのsectionsをフラットにする
+        .flatMap(section => section.notices || [])  // noticesをフラットにし、存在しない場合は空配列
+        .find(notice => notice.code === "violatedBlockedRoad");
 
+    return notice != undefined;
+};
 
-// 安全な歩行者ルートを取得し、ポリライン形式に変換する関数
+// Function to get safe pedestrian route and convert to Google Maps polyline format
 export async function GetSafePedestrianRoute(
     startPoint: [number, number],
     endPoint: [number, number]
@@ -87,15 +108,21 @@ export async function GetSafePedestrianRoute(
     lat: number;
     lng: number;
 }[], Point[]]> {
-    // Firebaseからリスクポイントを取得
+    // Fetch risk points from Firebase
     const risks: Point[] = await fetchLocationData();
 
-    // HERE APIからルートを取得
-    const response: HereServiceResponse = await searchRouteForPedestrians(startPoint, endPoint, risks);
+    // Get route from HERE API
+    let response: HereServiceResponse = await searchRouteForPedestrians(startPoint, endPoint, risks);
 
-    // 最初のルートセクションのポリラインをGoogle Mapsのポリライン形式に変換
-    const polylineString = convertToGooglePolyline(response.routes[0].sections[0].polyline);
+    for(let i:number = 1; i < 5 && isViolated(response); i++){
+        console.log(response);
+        response = await searchRouteForPedestrians(startPoint, endPoint, risks.filter((value: Point, index: number, array: Point[])=>value.risk > i))
+        console.log(`riskLevel ${i} is violated`);
+    }
 
-    // Google Maps API形式のポリラインを返す
-    return [polylineString, risks];
+    // Convert the first route section polyline to Google Maps format
+    let polylineArray = convertToGooglePolyline(response.routes[0].sections[0].polyline);
+
+    // Return polyline and risk points
+    return [polylineArray, risks];
 }

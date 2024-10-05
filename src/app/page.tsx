@@ -26,6 +26,7 @@ function Home() {
   const [endPoint, setEndPoint] = useState<google.maps.LatLngLiteral | null>(null);
   const [routeData, setRouteData] = useState<{ path: google.maps.LatLngLiteral[]; risks: Point[] }>({ path: [], risks: [] });
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false); // ローディング状態を追加
 
   useEffect(() => {
     const getGeolocation = () => {
@@ -33,14 +34,14 @@ function Home() {
         navigator.geolocation.getCurrentPosition(
           (position) => {
             const { latitude, longitude } = position.coords;
-            setCurrentLocation({ lat: latitude, lng: longitude }); // ここで緯度・経度が正しい数値か確認
+            setCurrentLocation({ lat: latitude, lng: longitude });
           },
           (error) => {
             console.error("Error getting current position:", error);
             setError("位置情報の取得中にエラーが発生しました。");
           },
           { enableHighAccuracy: true }
-        );        
+        );
       } else {
         setError("Geolocationがサポートされていません。");
       }
@@ -52,26 +53,34 @@ function Home() {
   const fetchSafeRoute = useCallback(
     async (endPoint: google.maps.LatLngLiteral) => {
       if (currentLocation) {
+        setLoading(true);  // データ取得中にローディングを表示
         try {
           const start: [number, number] = [currentLocation.lng, currentLocation.lat];
           const end: [number, number] = [endPoint.lng, endPoint.lat];
+          
           const [routePolyline, risks] = await GetSafePedestrianRoute(start, end);
           
-          // pathとrisksをまとめてstateに保存
-          setRouteData({ path: routePolyline,risks: risks });
+          setRouteData({ path: routePolyline, risks: risks });
         } catch (error) {
           setError("ルート取得中にエラーが発生しました。");
+        } finally {
+          setLoading(false);  // データ取得完了後にローディングを停止
         }
       }
     },
     [currentLocation]
   );
   
-  const handleMapClick = async (event: google.maps.MapMouseEvent) => {
+  useEffect(() => {
+    if (endPoint) {
+      fetchSafeRoute(endPoint);
+    }
+  }, [endPoint, fetchSafeRoute]);  // endPointが更新されたらfetchSafeRouteを呼び出す
+
+  const handleMapClick = (event: google.maps.MapMouseEvent) => {
     const latLng = event.latLng?.toJSON();
     if (latLng && currentLocation) {
-      setEndPoint(latLng);
-      await fetchSafeRoute(latLng);
+      setEndPoint(latLng);  // クリックされた地点をendPointに設定
     }
   };
 
@@ -86,11 +95,11 @@ function Home() {
   if (error) {
     return <p>{error}</p>;
   }
-
-
   console.log(routeData);
   return (
     <div>
+      {loading && <p>ルートを取得中...</p>} {/* ローディング中に表示 */}
+      
       {currentLocation ? (
         <GoogleMap
           mapContainerStyle={containerStyle}
@@ -98,7 +107,9 @@ function Home() {
           zoom={13}
           onClick={handleMapClick}
         >
-          {routeData.path.length > 0 && <Polyline path={routeData.path} options={{ strokeColor: "#0000FF", strokeWeight: 5 }} />}
+          {routeData.path.length > 0 && (
+            <Polyline path={routeData.path} options={{ strokeColor: "#0000FF", strokeWeight: 5 }} />
+          )}
           {currentLocation && (
             <Marker
               position={currentLocation}  // { lat: number, lng: number }形式が必須
@@ -115,7 +126,7 @@ function Home() {
           {routeData.risks.map((risk, index) => {
             if (risk.lat === undefined || risk.lng === undefined) return null;
             
-            const riskPosition: google.maps.LatLngLiteral = { lat: risk.lat, lng: risk.lng };  // ここで変数に代入
+            const riskPosition: google.maps.LatLngLiteral = { lat: risk.lat, lng: risk.lng };
             return (
               <Marker
                 key={index}
