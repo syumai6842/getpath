@@ -62,8 +62,8 @@ const searchRouteForPedestrians = async (
         const validRisks = pointsToAvoid.filter(risk => risk.lat !== undefined && risk.lng !== undefined);
 
         // Encode the polyline from risk points (for the corridor)
-        const m = 0.00005;
-        const corridorPolyline = validRisks.map(risk => `bbox:${risk.lat-m},${risk.lng-m},${risk.lat+m},${risk.lng+m}`).join('|');
+        const m = 0.0001;
+        const boxPolyline = validRisks.map(risk => `bbox:${risk.lng-m},${risk.lat-m},${risk.lng+m},${risk.lat+m}`).join('|');
 
         // HERE Routing API request
         const response = await axios.get(HERE_API_URL, {
@@ -72,11 +72,12 @@ const searchRouteForPedestrians = async (
                 transportMode: 'pedestrian', // Set mode to pedestrian
                 origin: `${startPoint[1]},${startPoint[0]}`, // Origin (lat, lng)
                 destination: `${endPoint[1]},${endPoint[0]}`, // Destination (lat, lng)
-                "avoid[areas]":corridorPolyline,
-                return: 'polyline'  // Return route as polyline
+                "avoid[areas]":boxPolyline == "" ? null : boxPolyline,
+                return: 'polyline,summary'  // Return route as polyline
             }
-            
         });
+
+        console.log(response);
         return response.data as HereServiceResponse;
     } catch (error) {
         console.error('Error fetching pedestrian route:', error);
@@ -110,12 +111,12 @@ export async function GetSafePedestrianRoute(
 }[], Point[]]> {
     // Fetch risk points from Firebase
     const risks: Point[] = await fetchLocationData();
-
     // Get route from HERE API
     let response: HereServiceResponse = await searchRouteForPedestrians(startPoint, endPoint, risks);
-
-    for(let i:number = 1; i < 5 && isViolated(response); i++){
-        console.log(response);
+    
+    const minTime: number = (await searchRouteForPedestrians(startPoint, endPoint, []) as HereServiceResponse).routes[0].sections[0].summary.duration;
+    
+    for(let i:number = 1; i < 5 && (isViolated(response) || minTime * 1.2 < response.routes[0].sections[0].summary.duration); i++){
         response = await searchRouteForPedestrians(startPoint, endPoint, risks.filter((value: Point, index: number, array: Point[])=>value.risk > i))
         console.log(`riskLevel ${i} is violated`);
     }

@@ -95,7 +95,6 @@ function Home() {
   if (error) {
     return <p>{error}</p>;
   }
-  console.log(routeData);
   return (
     <div>
       {loading && <p>ルートを取得中...</p>} {/* ローディング中に表示 */}
